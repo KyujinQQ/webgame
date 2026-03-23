@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>極限滑雪：大賽版</title>
+    <style>
+        :root {
+            --primary: #3498db;
+            --danger: #e74c3c;
+            --snow: #ffffff;
+        }
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: #d1eaf0; 
+            font-family: 'Segoe UI', Microsoft JhengHei, sans-serif; 
+        }
+        canvas { 
+            display: block; 
+            margin: 0 auto; 
+            background: linear-gradient(to bottom, #e0f2f1 0%, #ffffff 100%);
+            box-shadow: 0 0 50px rgba(0,0,0,0.1);
+        }
+        
+        /* UI 樣式優化 */
+        #ui-layer {
+            position: absolute;
+            top: 25px;
+            left: 25px;
+            color: #2c3e50;
+            pointer-events: none;
+            background: rgba(255, 255, 255, 0.7);
+            padding: 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(5px);
+            border-left: 5px solid var(--primary);
+        }
+        .score-box { font-size: 18px; font-weight: 800; text-transform: uppercase; letter-spacing: 1px; }
+        .high-score { color: #d35400; font-size: 14px; margin-top: 5px; }
+
+        #game-over {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+            display: none;
+            z-index: 100;
+            min-width: 250px;
+        }
+        h1 { color: #2c3e50; margin-bottom: 10px; }
+        .stat-label { color: #7f8c8d; font-size: 14px; }
+        .stat-value { font-size: 32px; font-weight: bold; color: var(--primary); display: block; margin-bottom: 20px; }
+        button {
+            background: var(--primary);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 18px;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.2s;
+            box-shadow: 0 4px 15px rgba(52, 152, 219, 0.4);
+        }
+        button:hover { background: #2980b9; transform: translateY(-2px); box-shadow: 0 6px 20px rgba(52, 152, 219, 0.6); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div class="score-box">SCORE: <span id="currentScore">0</span></div>
+        <div class="high-score">BEST: <span id="bestScore">0</span></div>
+    </div>
+
+    <div id="game-over">
+        <h1>GAME OVER</h1>
+        <span class="stat-label">本次得分</span>
+        <span id="finalScore" class="stat-value">0</span>
+        <button onclick="resetGame()">再次挑戰</button>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    canvas.width = Math.min(window.innerWidth, 800);
+    canvas.height = window.innerHeight;
+
+    let gameActive = true;
+    let score = 0;
+    let highScore = localStorage.getItem('skiHighScoreV3') || 0;
+    let speed = 6;
+    let items = [];
+    let particles = [];
+    let trails = []; // 儲存滑雪痕跡
+    let frameCount = 0;
+    let playerTargetX = canvas.width / 2;
+    let playerX = canvas.width / 2;
+    let leanAngle = 0;
+
+    document.getElementById('bestScore').innerText = highScore;
+
+    // 隨機裝飾（雪堆）
+    let decorations = [];
+    for(let i=0; i<20; i++) {
+        decorations.push({
+            x: Math.random() * canvas.width,
+            y: Math.random() * canvas.height,
+            w: Math.random() * 30 + 10
+        });
+    }
+
+    window.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        playerTargetX = e.clientX - rect.left;
+    });
+
+    class Particle {
+        constructor(x, y, color) {
+            this.x = x;
+            this.y = y;
+            this.vx = (Math.random() - 0.5) * 4;
+            this.vy = (Math.random() - 0.5) * 2 - 2;
+            this.life = 1.0;
+            this.color = color;
+            this.size = Math.random() * 3 + 1;
+        }
+        update() {
+            this.x += this.vx;
+            this.y += this.vy;
+            this.life -= 0.02;
+        }
+        draw() {
+            ctx.fillStyle = `rgba(255, 255, 255, ${this.life})`;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    class GameObject {
+        constructor(type) {
+            this.type = type; // 'tree', 'rock', 'flag', 'floatText'
+            this.width = 40;
+            this.height = 40;
+            this.x = Math.random() * (canvas.width - 40) + 20;
+            this.y = canvas.height + 100;
+            this.text = ""; // 用於浮動文字
+            this.life = 1.0; // 用於浮動文字
+        }
+
+        update() {
+            this.y -= speed;
+            if (this.type === 'floatText') {
+                this.y -= 2; // 額外向上飄
+                this.life -= 0.02;
+            }
+        }
+
+        draw() {
+            ctx.save();
+            // 繪製陰影
+            if (this.type !== 'floatText') {
+                ctx.fillStyle = 'rgba(0,0,0,0.05)';
+                ctx.beginPath();
+                ctx.ellipse(this.x + 20, this.y + 35, 15, 7, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            if (this.type === 'tree') {
+                // 多層次針葉樹
+                ctx.fillStyle = '#1b4d3e';
+                for(let i=0; i<3; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(this.x + 20, this.y + (i*8));
+                    ctx.lineTo(this.x + 5 + (i*3), this.y + 20 + (i*10));
+                    ctx.lineTo(this.x + 35 - (i*3), this.y + 20 + (i*10));
+                    ctx.fill();
+                }
+                ctx.fillStyle = '#3e2723';
+                ctx.fillRect(this.x + 17, this.y + 30, 6, 8);
+            } else if (this.type === 'rock') {
+                ctx.fillStyle = '#78909c';
+                ctx.beginPath();
+                ctx.moveTo(this.x+5, this.y+35);
+                ctx.quadraticCurveTo(this.x+20, this.y, this.x+35, this.y+35);
+                ctx.fill();
+            } else if (this.type === 'flag') {
+                // 飄動的旗幟
+                let wave = Math.sin(Date.now() / 150) * 5;
+                ctx.fillStyle = '#546e7a';
+                ctx.fillRect(this.x + 18, this.y, 4, 40);
+                ctx.fillStyle = '#ff1744';
+                ctx.beginPath();
+                ctx.moveTo(this.x + 22, this.y + 5);
+                ctx.lineTo(this.x + 45 + wave, this.y + 15);
+                ctx.lineTo(this.x + 22, this.y + 25);
+                ctx.fill();
+            } else if (this.type === 'floatText') {
+                ctx.fillStyle = `rgba(52, 152, 219, ${this.life})`;
+                ctx.font = "bold 20px Arial";
+                ctx.fillText(this.text, this.x, this.y);
+            }
+            ctx.restore();
+        }
+    }
+
+    function drawPlayer() {
+        // 平滑跟隨滑鼠
+        let dx = playerTargetX - playerX;
+        playerX += dx * 0.15;
+        leanAngle = dx * 0.05; // 根據移動速度傾斜
+
+        // 記錄滑雪軌跡
+        if (frameCount % 2 === 0) {
+            trails.push({x1: playerX + 5, x2: playerX + 25, y: playerY + 30});
+            if (trails.length > 100) trails.shift();
+        }
+
+        // 噴雪顆粒
+        if (Math.abs(dx) > 1) {
+            particles.push(new Particle(playerX + 5, playerY + 30));
+            particles.push(new Particle(playerX + 25, playerY + 30));
+        }
+
+        ctx.save();
+        ctx.translate(playerX + 15, playerY + 15);
+        ctx.rotate(leanAngle * Math.PI / 180);
+        
+        // 畫雪板
+        ctx.fillStyle = '#2c3e50';
+        ctx.fillRect(-18, 10, 6, 25); // 左板
+        ctx.fillRect(12, 10, 6, 25);  // 右板
+        
+        // 畫身體 (夾克)
+        ctx.fillStyle = '#e74c3c';
+        ctx.beginPath();
+        ctx.roundRect(-10, -10, 20, 25, 5);
+        ctx.fill();
+        
+        // 畫頭盔
+        ctx.fillStyle = '#f1c40f';
+        ctx.beginPath();
+        ctx.arc(0, -12, 8, 0, Math.PI * 2);
+        ctx.fill();
+        
+        // 護目鏡
+        ctx.fillStyle = '#34495e';
+        ctx.fillRect(-5, -15, 10, 4);
+
+        ctx.restore();
+    }
+
+    const playerY = 150;
+
+    function resetGame() {
+        score = 0; speed = 6; items = []; trails = []; particles = [];
+        gameActive = true;
+        document.getElementById('game-over').style.display = 'none';
+        animate();
+    }
+
+    function animate() {
+        if (!gameActive) return;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 1. 繪製背景裝飾 (雪堆)
+        ctx.strokeStyle = '#e0f2f1';
+        ctx.lineWidth = 2;
+        decorations.forEach(d => {
+            ctx.beginPath();
+            ctx.moveTo(d.x, d.y);
+            ctx.lineTo(d.x + d.w, d.y);
+            ctx.stroke();
+            d.y -= speed;
+            if (d.y < -50) d.y = canvas.height + 50;
+        });
+
+        // 2. 繪製永久軌跡
+        ctx.strokeStyle = 'rgba(0,0,0,0.05)';
+        ctx.lineWidth = 3;
+        trails.forEach(t => {
+            ctx.beginPath();
+            ctx.moveTo(t.x1, t.y); ctx.lineTo(t.x1, t.y - speed);
+            ctx.moveTo(t.x2, t.y); ctx.lineTo(t.x2, t.y - speed);
+            ctx.stroke();
+            t.y -= speed;
+        });
+
+        // 3. 繪製粒子
+        particles.forEach((p, i) => {
+            p.update();
+            p.draw();
+            if (p.life <= 0) particles.splice(i, 1);
+        });
+
+        // 4. 繪製物件
+        for (let i = items.length - 1; i >= 0; i--) {
+            items[i].update();
+            items[i].draw();
+
+            // 碰撞檢測
+            let pRect = { x: playerX, y: playerY, w: 30, h: 30 };
+            let oRect = { x: items[i].x, y: items[i].y, w: 35, h: 35 };
+
+            if (pRect.x < oRect.x + oRect.w && pRect.x + pRect.w > oRect.x &&
+                pRect.y < oRect.y + oRect.h && pRect.y + pRect.h > oRect.y) {
+                
+                if (items[i].type === 'flag') {
+                    score += 500;
+                    // 加入浮動文字
+                    let ft = new GameObject('floatText');
+                    ft.x = items[i].x; ft.y = items[i].y; ft.text = "+500";
+                    items.push(ft);
+                    items.splice(i, 1);
+                } else if (items[i].type === 'tree' || items[i].type === 'rock') {
+                    gameActive = false;
+                    if (score > highScore) {
+                        highScore = Math.floor(score);
+                        localStorage.setItem('skiHighScoreV3', highScore);
+                        document.getElementById('bestScore').innerText = highScore;
+                    }
+                    document.getElementById('finalScore').innerText = Math.floor(score);
+                    document.getElementById('game-over').style.display = 'block';
+                }
+            }
+
+            if (items[i].y < -100) {
+                if (items[i].type !== 'floatText') score += 1;
+                items.splice(i, 1);
+            }
+        }
+
+        // 5. 生成物件
+        if (frameCount % 30 === 0) items.push(new GameObject(Math.random() > 0.8 ? 'rock' : 'tree'));
+        if (frameCount % 100 === 0) items.push(new GameObject('flag'));
+
+        // 6. 繪製玩家
+        drawPlayer();
+
+        score += 0.1; // 隨時間微幅加分
+        speed += 0.001; // 緩慢加速
+        document.getElementById('currentScore').innerText = Math.floor(score);
+        frameCount++;
+        requestAnimationFrame(animate);
+    }
+
+    animate();
+</script>
+</body>
+</html>
